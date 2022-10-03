@@ -1,2 +1,1 @@
-# amm_solana
-Implements Uniswap's constant function market maker model with Anchor.
+Constant function automated market maker based on the uniswap model.
