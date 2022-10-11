@@ -5,6 +5,8 @@ declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
 
 pub const MAX_POOLS: usize = 10;
 
+mod torrent_test;
+
 /// Wherever it's used, lt stands for liquidity token.
 #[program]
 pub mod torrent {
@@ -13,8 +15,8 @@ pub mod torrent {
     pub fn initialize(ctx: Context<InitializeTorrent>, _lt_decimals: u8) -> Result<()> {
         let torrent = &mut ctx.accounts.torrent;
         torrent.authority = ctx.accounts.authority.key();
-        torrent.lt_mint = ctx.accounts.liquidity_token.key();
-        torrent.total_lt_supply = 0;
+        torrent.liquidity_token_mint = ctx.accounts.liquidity_token.key();
+        torrent.torrent_liquidity = 0;
         torrent.pools = [Pubkey::default(); MAX_POOLS];
 
         Ok(())
@@ -31,10 +33,13 @@ pub mod torrent {
         let pool_index = torrent.register_pool(pool.key()).unwrap();
         pool.index = pool_index;
         pool.torrent = torrent.key();
-        let mint_amount = (initial_x + initial_y) >> 1;
+        //let mint_amount = (initial_x + initial_y) >> 1;
+        let mint_amount = initial_x
+            .checked_add(initial_y).unwrap()
+            .checked_div(2).unwrap();
 
-        pool.lt_minted = pool.lt_minted.checked_add(mint_amount).unwrap();
-        torrent.total_lt_supply = torrent.total_lt_supply.checked_add(mint_amount).unwrap();
+        pool.pool_liquidity = pool.pool_liquidity.checked_add(mint_amount).unwrap();
+        torrent.torrent_liquidity = torrent.torrent_liquidity.checked_add(mint_amount).unwrap();
 
         let torrent_bump = *ctx.bumps.get("torrent").unwrap();
         let authority = ctx.accounts.authority.key();
@@ -45,7 +50,7 @@ pub mod torrent {
                 ctx.accounts.token_program.to_account_info(),
                 MintTo {
                     to: ctx.accounts.authority_lt_wallet.to_account_info(),
-                    mint: ctx.accounts.lt_mint.to_account_info(),
+                    mint: ctx.accounts.liquidity_token_mint.to_account_info(),
                     authority: ctx.accounts.torrent.to_account_info(),
                 },
             )
@@ -100,20 +105,20 @@ pub mod torrent {
         require!(user_x_balance >= x_deposit, CustomError::InadequateBalance);
         require!(user_y_balance >= y_deposit, CustomError::InadequateBalance);
 
-        let pool_lt_minted = ctx.accounts.pool.lt_minted;
+        let pool_liquidity = ctx.accounts.pool.pool_liquidity;
 
         // Does this work? Looks like multiplication is guaranteed to fail.
         // Test on code completion and apply fix if needed.
-        let mint_amount = y_deposit
-            .checked_mul(pool_lt_minted)
+        let mint_amount = ((y_deposit as u128)
+            .checked_mul(pool_liquidity as u128)
             .unwrap()
-            .checked_div(y_vault_balance)
-            .unwrap();
+            .checked_div(y_vault_balance as u128)
+            .unwrap()) as u64;
 
         let pool = &mut ctx.accounts.pool;
         let torrent = &mut ctx.accounts.torrent;
-        pool.lt_minted = pool.lt_minted.checked_add(mint_amount).unwrap();
-        torrent.total_lt_supply = torrent.total_lt_supply.checked_add(mint_amount).unwrap();
+        pool.pool_liquidity = pool.pool_liquidity.checked_add(mint_amount).unwrap();
+        torrent.torrent_liquidity = torrent.torrent_liquidity.checked_add(mint_amount).unwrap();
 
         let torrent_bump = *ctx.bumps.get("torrent").unwrap();
         let torrent_authority = torrent.authority;
@@ -124,7 +129,7 @@ pub mod torrent {
                 ctx.accounts.token_program.to_account_info(),
                 MintTo {
                     to: ctx.accounts.user_lt_wallet.to_account_info(),
-                    mint: ctx.accounts.lt_mint.to_account_info(),
+                    mint: ctx.accounts.liquidity_token_mint.to_account_info(),
                     authority: ctx.accounts.torrent.to_account_info(),
                 },
             )
@@ -159,32 +164,32 @@ pub mod torrent {
         Ok(())
     }
 
-    pub fn subtract_liquidity(ctx: Context<AlterLiquidity>, lt_amount: u64) -> Result<()> {
+    pub fn remove_liquidity(ctx: Context<AlterLiquidity>, lt_amount: u64) -> Result<()> {
         let user_lt_balance = ctx.accounts.user_lt_wallet.amount;
         require!(user_lt_balance >= lt_amount, CustomError::InadequateBalance);
-        let pool_lt_minted = ctx.accounts.pool.lt_minted;
-        require!(pool_lt_minted >= lt_amount, CustomError::ExcessiveBurn);
+        let pool_liquidity = ctx.accounts.pool.pool_liquidity;
+        require!(pool_liquidity >= lt_amount, CustomError::ExcessiveBurn);
 
         let x_vault_balance = ctx.accounts.x_token_vault.amount;
         let y_vault_balance = ctx.accounts.y_token_vault.amount;
 
         // Does this work?
-        let x_owed = lt_amount
-            .checked_mul(x_vault_balance)
+        let x_owed = ((lt_amount as u128)
+            .checked_mul(x_vault_balance as u128)
             .unwrap()
-            .checked_div(pool_lt_minted)
-            .unwrap();
-        let y_owed = lt_amount
-            .checked_mul(y_vault_balance)
+            .checked_div(pool_liquidity as u128)
+            .unwrap()) as u64;
+        let y_owed = ((lt_amount as u128)
+            .checked_mul(y_vault_balance as u128)
             .unwrap()
-            .checked_div(pool_lt_minted)
-            .unwrap();
+            .checked_div(pool_liquidity as u128)
+            .unwrap()) as u64;
 
         let pool = &mut ctx.accounts.pool;
         let torrent = &mut ctx.accounts.torrent;
 
-        pool.lt_minted = pool.lt_minted.checked_sub(lt_amount).unwrap();
-        torrent.total_lt_supply = torrent.total_lt_supply.checked_sub(lt_amount).unwrap();
+        pool.pool_liquidity = pool.pool_liquidity.checked_sub(lt_amount).unwrap();
+        torrent.torrent_liquidity = torrent.torrent_liquidity.checked_sub(lt_amount).unwrap();
 
         let pool_bump = *ctx.bumps.get("pool").unwrap();
         let x_token_mint = ctx.accounts.x_token_vault.mint;
@@ -228,7 +233,7 @@ pub mod torrent {
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 Burn {
-                    mint: ctx.accounts.lt_mint.to_account_info(),
+                    mint: ctx.accounts.liquidity_token_mint.to_account_info(),
                     from: ctx.accounts.user_lt_wallet.to_account_info(),
                     authority: ctx.accounts.user.to_account_info(),
                 },
@@ -275,9 +280,9 @@ pub struct InitializeTorrent<'info> {
 #[derive(Accounts)]
 #[instruction(initial_x: u64, initial_y: u64)]
 pub struct InitializePool<'info> {
-    #[account(has_one = authority, has_one = lt_mint)]
+    #[account(has_one = authority, has_one = liquidity_token_mint)]
     torrent: Box<Account<'info, Torrent>>,
-    lt_mint: Box<Account<'info, Mint>>,
+    liquidity_token_mint: Box<Account<'info, Mint>>,
 
     #[account(mut)]
     authority: Signer<'info>,
@@ -304,7 +309,7 @@ pub struct InitializePool<'info> {
     #[account(
         mut,
         constraint = authority_lt_wallet.owner == authority.key(),
-        constraint = authority_lt_wallet.mint == lt_mint.key()
+        constraint = authority_lt_wallet.mint == liquidity_token_mint.key()
     )]
     authority_lt_wallet: Box<Account<'info, TokenAccount>>,
 
@@ -351,7 +356,7 @@ pub struct AlterLiquidity<'info> {
     user: Signer<'info>,
 
     #[account(
-        has_one = lt_mint,
+        has_one = liquidity_token_mint,
         constraint = torrent.pools[pool.index as usize] == pool.key() @ CustomError::TorrentPoolMismatch
     )]
     torrent: Box<Account<'info, Torrent>>,
@@ -363,7 +368,7 @@ pub struct AlterLiquidity<'info> {
     #[account(mut, seeds = [b"y_vault".as_ref(), pool.key().as_ref()], bump)]
     y_token_vault: Box<Account<'info, TokenAccount>>,
 
-    lt_mint: Box<Account<'info, Mint>>,
+    liquidity_token_mint: Box<Account<'info, Mint>>,
 
     /// User's token accounts
     #[account(
@@ -381,7 +386,7 @@ pub struct AlterLiquidity<'info> {
     #[account(
         mut,
         constraint = user_lt_wallet.owner == user.key(),
-        constraint = user_lt_wallet.mint == lt_mint.key(),
+        constraint = user_lt_wallet.mint == liquidity_token_mint.key(),
     )]
     user_lt_wallet: Box<Account<'info, TokenAccount>>,
 
@@ -395,10 +400,10 @@ pub struct Torrent {
     authority: Pubkey,
 
     // Liquidity token mint
-    lt_mint: Pubkey,
+    liquidity_token_mint: Pubkey,
 
     // Total supply of liquidity tokens
-    total_lt_supply: u64,
+    torrent_liquidity: u64,
 
     // Associated Pools
     pools: [Pubkey; MAX_POOLS],
@@ -431,7 +436,7 @@ pub struct Pool {
     torrent: Pubkey,
 
     // lt_tokens minted by this pool
-    lt_minted: u64,
+    pool_liquidity: u64,
 }
 
 impl Pool {
