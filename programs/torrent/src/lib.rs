@@ -48,7 +48,7 @@ pub mod torrent {
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 MintTo {
-                    to: ctx.accounts.authority_liquiity_token_wallet.to_account_info(),
+                    to: ctx.accounts.authority_liquidity_token_wallet.to_account_info(),
                     mint: ctx.accounts.liquidity_token_mint.to_account_info(),
                     authority: ctx.accounts.torrent.to_account_info(),
                 },
@@ -307,10 +307,10 @@ pub struct InitializePool<'info> {
     authority_y_wallet: Box<Account<'info, TokenAccount>>,
     #[account(
         mut,
-        constraint = authority_liquiity_token_wallet.owner == authority.key(),
-        constraint = authority_liquiity_token_wallet.mint == liquidity_token_mint.key()
+        constraint = authority_liquidity_token_wallet.owner == authority.key(),
+        constraint = authority_liquidity_token_wallet.mint == liquidity_token_mint.key()
     )]
-    authority_liquiity_token_wallet: Box<Account<'info, TokenAccount>>,
+    authority_liquidity_token_wallet: Box<Account<'info, TokenAccount>>,
 
     /// Stores pool state
     #[account(
