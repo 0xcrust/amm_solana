@@ -1,13 +1,13 @@
 [features]
 seeds = false
-[programs.localnet]
-torrent = "Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS"
+[programs.devnet]
+torrent = "HzL5F7ePCv4bftNfSnMeGWtAYafJgGe5imiJjrD1Gd8n"
 
 [registry]
 url = "https://anchor.projectserum.com"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "/home/ademola/.config/solana/id.json"
 
 [scripts]
