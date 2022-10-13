@@ -17,6 +17,7 @@ pub mod torrent {
         torrent.liquidity_token_mint = ctx.accounts.liquidity_token.key();
         torrent.torrent_liquidity = 0;
         torrent.pools = [Pubkey::default(); MAX_POOLS];
+        torrent.bump = *ctx.bumps.get("torrent").unwrap();
 
         Ok(())
     }
@@ -32,15 +33,18 @@ pub mod torrent {
         let pool_index = torrent.register_pool(pool.key()).unwrap();
         pool.index = pool_index;
         pool.torrent = torrent.key();
+
         //let mint_amount = (initial_x + initial_y) >> 1;
         let mint_amount = initial_x
-            .checked_add(initial_y).unwrap()
-            .checked_div(2).unwrap();
+            .checked_add(initial_y)
+            .unwrap()
+            .checked_div(2 as u64)
+            .unwrap();
 
         pool.pool_liquidity = pool.pool_liquidity.checked_add(mint_amount).unwrap();
         torrent.torrent_liquidity = torrent.torrent_liquidity.checked_add(mint_amount).unwrap();
 
-        let torrent_bump = *ctx.bumps.get("torrent").unwrap();
+        let torrent_bump = torrent.bump;
         let authority = ctx.accounts.authority.key();
         let torrent_signature = &[b"torrent", authority.as_ref(), &[torrent_bump]];
 
@@ -48,7 +52,10 @@ pub mod torrent {
             CpiContext::new(
                 ctx.accounts.token_program.to_account_info(),
                 MintTo {
-                    to: ctx.accounts.authority_liquidity_token_wallet.to_account_info(),
+                    to: ctx
+                        .accounts
+                        .authority_liquidity_token_wallet
+                        .to_account_info(),
                     mint: ctx.accounts.liquidity_token_mint.to_account_info(),
                     authority: ctx.accounts.torrent.to_account_info(),
                 },
@@ -279,8 +286,9 @@ pub struct InitializeTorrent<'info> {
 #[derive(Accounts)]
 #[instruction(initial_x: u64, initial_y: u64)]
 pub struct InitializePool<'info> {
-    #[account(has_one = authority, has_one = liquidity_token_mint)]
+    #[account(mut, has_one = authority, has_one = liquidity_token_mint)]
     torrent: Box<Account<'info, Torrent>>,
+    #[account(mut)]
     liquidity_token_mint: Box<Account<'info, Mint>>,
 
     #[account(mut)]
@@ -355,11 +363,11 @@ pub struct AlterLiquidity<'info> {
     user: Signer<'info>,
 
     #[account(
-        has_one = liquidity_token_mint,
+        mut, has_one = liquidity_token_mint,
         constraint = torrent.pools[pool.index as usize] == pool.key() @ CustomError::TorrentPoolMismatch
     )]
     torrent: Box<Account<'info, Torrent>>,
-    #[account(has_one = torrent)]
+    #[account(mut, has_one = torrent)]
     pool: Box<Account<'info, Pool>>,
 
     #[account(mut, seeds = [b"x_vault".as_ref(), pool.key().as_ref()], bump)]
@@ -367,6 +375,7 @@ pub struct AlterLiquidity<'info> {
     #[account(mut, seeds = [b"y_vault".as_ref(), pool.key().as_ref()], bump)]
     y_token_vault: Box<Account<'info, TokenAccount>>,
 
+    #[account(mut)]
     liquidity_token_mint: Box<Account<'info, Mint>>,
 
     /// User's token accounts
@@ -395,20 +404,22 @@ pub struct AlterLiquidity<'info> {
 #[account]
 pub struct Torrent {
     // Authority
-    authority: Pubkey,
+    pub authority: Pubkey,
 
     // Liquidity token mint
-    liquidity_token_mint: Pubkey,
+    pub liquidity_token_mint: Pubkey,
 
     // Total supply of liquidity tokens
-    torrent_liquidity: u64,
+    pub torrent_liquidity: u64,
 
     // Associated Pools
-    pools: [Pubkey; MAX_POOLS],
+    pub pools: [Pubkey; MAX_POOLS],
+
+    pub bump: u8,
 }
 
 impl Torrent {
-    const SIZE: usize = 32 + 32 + 8 + (32 * 10) + 200;
+    const SIZE: usize = 32 + 32 + 8 + (32 * 10) + 1;
 
     pub fn register_pool(&mut self, new_pool: Pubkey) -> Result<u8> {
         for (index, pool) in self.pools.iter_mut().enumerate() {
@@ -427,13 +438,13 @@ impl Torrent {
 #[account]
 pub struct Pool {
     // Pool's position in the torrent
-    index: u8,
+    pub index: u8,
 
     // The torrent this pool belongs to
-    torrent: Pubkey,
+    pub torrent: Pubkey,
 
     // liquidity tokens minted by this pool
-    pool_liquidity: u64,
+    pub pool_liquidity: u64,
 }
 
 impl Pool {
