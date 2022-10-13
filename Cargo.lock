@@ -4086,9 +4086,11 @@ dependencies = [
  "anchor-lang",
  "anchor-spl",
  "anyhow",
+ "bs58 0.4.0",
  "rand 0.7.3",
  "shellexpand",
  "spl-associated-token-account",
+ "torrent",
 ]
 
 [[package]]
