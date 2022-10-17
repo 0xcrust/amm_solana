@@ -1,5 +1,6 @@
 import * as anchor from "@project-serum/anchor";
-import { Program } from "@project-serum/anchor";
+import * as spl from '@solana/spl-token';
+import { Program, splitArgsAndCtx } from "@project-serum/anchor";
 import { assert } from "chai";
 import { Torrent } from "../target/types/torrent";
 import {
@@ -7,7 +8,9 @@ import {
   createTokenMint,
   createATA,
   mintTokensToWallet,
+  customGetTokenAccountBalance
 } from "./utils";
+import { TokenError } from "@solana/spl-token";
 
 describe("Torrent", () => {
   const provider = anchor.AnchorProvider.env();
@@ -16,17 +19,31 @@ describe("Torrent", () => {
 
   const authority = anchor.web3.Keypair.generate();
   const mintAuthority = anchor.web3.Keypair.generate();
+
+  let torrentPDA: anchor.web3.PublicKey;
+  let liquidityTokenMint: anchor.web3.PublicKey;
+  let xTokenMint: anchor.web3.PublicKey;
+  let yTokenMint: anchor.web3.PublicKey;
+  let xyPool: anchor.web3.PublicKey;
+  let xVault: anchor.web3.PublicKey;
+  let yVault: anchor.web3.PublicKey;
+
+  let torrentBump: number;
+  let ltBump: number;
+  let xyPoolBump: number;
+  let xVaultBump: number;
+  let yVaultBump: number;
   
   it("initializes torrent and pool!", async () => {
     // Airdrop sol to authority
     await airdrop(provider.connection, authority.publicKey, 1);
 
-    let [torrentPDA, _torrentBump] = await anchor.web3.PublicKey.findProgramAddress(
+    [torrentPDA, torrentBump] = await anchor.web3.PublicKey.findProgramAddress(
       [Buffer.from(anchor.utils.bytes.utf8.encode("torrent")), authority.publicKey
       .toBuffer()], program.programId
     );
 
-    let [liquidityTokenMint, _ltBump] = await anchor.web3.PublicKey.findProgramAddress([
+    [liquidityTokenMint, ltBump] = await anchor.web3.PublicKey.findProgramAddress([
       Buffer.from(anchor.utils.bytes.utf8.encode("token")), torrentPDA.toBuffer()
     ], program.programId);
     
@@ -48,8 +65,8 @@ describe("Torrent", () => {
     assert.equal(torrentState.torrentLiquidity.toNumber(), 0);
 
     await airdrop(provider.connection, mintAuthority.publicKey, 1);
-    let [xTokenMint, _xBump] = await createTokenMint(provider.connection, mintAuthority, 0);
-    let [yTokenMint, _yBump] = await createTokenMint(provider.connection, mintAuthority, 0);
+    xTokenMint = await createTokenMint(provider.connection, mintAuthority, 0);
+    yTokenMint = await createTokenMint(provider.connection, mintAuthority, 0);
 
     // Create token accounts
     let authorityXWallet = await createATA(provider.connection, authority, xTokenMint);
@@ -66,16 +83,16 @@ describe("Torrent", () => {
     await mintTokensToWallet(provider.connection, authorityYWallet, initialY + 2, mintAuthority, 
       yTokenMint, mintAuthority);
 
-    let [poolPDA, _poolBump] = await anchor.web3.PublicKey.findProgramAddress([
+    [xyPool, xyPoolBump] = await anchor.web3.PublicKey.findProgramAddress([
       torrentPDA.toBuffer(), xTokenMint.toBuffer(), yTokenMint.toBuffer()
     ], program.programId);
 
-    let [xVaultPDA, _xVaultBump] = await anchor.web3.PublicKey.findProgramAddress([
-      Buffer.from(anchor.utils.bytes.utf8.encode("x_vault")), poolPDA.toBuffer()
+    [xVault, xVaultBump] = await anchor.web3.PublicKey.findProgramAddress([
+      Buffer.from(anchor.utils.bytes.utf8.encode("x_vault")), xyPool.toBuffer()
     ], program.programId);
 
-    let [yVaultPDA, _yVaultBump] = await anchor.web3.PublicKey.findProgramAddress([
-      Buffer.from(anchor.utils.bytes.utf8.encode("y_vault")), poolPDA.toBuffer()
+    [yVault, yVaultBump] = await anchor.web3.PublicKey.findProgramAddress([
+      Buffer.from(anchor.utils.bytes.utf8.encode("y_vault")), xyPool.toBuffer()
     ], program.programId);
 
     try {
@@ -90,9 +107,9 @@ describe("Torrent", () => {
         authorityXWallet: authorityXWallet,
         authorityYWallet: authorityYWallet,
         authorityLiquidityTokenWallet: authorityLtWallet,
-        pool: poolPDA,
-        xTokenVault: xVaultPDA,
-        yTokenVault: yVaultPDA,
+        pool: xyPool,
+        xTokenVault: xVault,
+        yTokenVault: yVault,
       })
       .signers([authority])
       .rpc();
@@ -101,21 +118,76 @@ describe("Torrent", () => {
     }
 
     torrentState = await program.account.torrent.fetch(torrentPDA);
-    let poolState = await program.account.pool.fetch(poolPDA);
+    let poolState = await program.account.pool.fetch(xyPool);
     let poolIndex = poolState.index;
 
     assert.ok(poolState.torrent.equals(torrentPDA));
-    assert.ok(torrentState.pools[poolIndex].equals(poolPDA));
+    assert.ok(torrentState.pools[poolIndex].equals(xyPool));
     assert.equal(poolState.poolLiquidity.toNumber(), expectedMintAmount);
     assert.equal(torrentState.torrentLiquidity.toNumber(), expectedMintAmount);
 
-    let xVaultState = await provider.connection.getTokenAccountBalance(xVaultPDA);
-    let yVaultState = await provider.connection.getTokenAccountBalance(yVaultPDA);
-    let authorityLtWalletState = await provider.connection.getTokenAccountBalance(authorityLtWallet);
+    let xVaultBalance = await customGetTokenAccountBalance(provider.connection, xVault);
+    let yVaultBalance = await customGetTokenAccountBalance(provider.connection, yVault);
+    let authorityLtWalletBalance = await customGetTokenAccountBalance(provider.connection, authorityLtWallet);
 
-    assert.equal(xVaultState.value.uiAmount, initialX);
-    assert.equal(yVaultState.value.uiAmount, initialY);
-    assert.equal(authorityLtWalletState.value.uiAmount, expectedMintAmount);
+    assert.equal(xVaultBalance, initialX);
+    assert.equal(yVaultBalance, initialY);
+    assert.equal(authorityLtWalletBalance, expectedMintAmount);
+});
+
+it ("Simulates adding liquidity", async () => {
+  async function addLiquidity(amountX: number, amountY: number, liquidityProvider: anchor.web3.Keypair) {
+    // airdrop sol to provider
+    await airdrop(provider.connection, liquidityProvider.publicKey, 1);
+    let xTokenATA = await createATA(provider.connection, liquidityProvider, xTokenMint);
+    let yTokenATA = await createATA(provider.connection, liquidityProvider, yTokenMint);
+    let liquidityTokenATA = await createATA(provider.connection, liquidityProvider, liquidityTokenMint);
+
+    await mintTokensToWallet(provider.connection, xTokenATA, 20, liquidityProvider, xTokenMint, mintAuthority);
+    await mintTokensToWallet(provider.connection, yTokenATA, 20, liquidityProvider, yTokenMint, mintAuthority);
+
+    let xVaultBalance = await customGetTokenAccountBalance(provider.connection, xVault);
+    let yVaultBalance = await customGetTokenAccountBalance(provider.connection, yVault);
+    let expectedXAdded = amountX;
+    let expectedYAdded = Math.trunc((yVaultBalance * amountX) / xVaultBalance);
+
+    let poolState = await program.account.pool.fetch(xyPool);
+    let torrentState = await program.account.torrent.fetch(torrentPDA);
+    let poolLiquidity = poolState.poolLiquidity;
+    let mintAmount = Math.trunc((amountX * poolLiquidity.toNumber()) / xVaultBalance);
+    
+
+    await program.methods
+      .addLiquidity(new anchor.BN(amountX), new anchor.BN(amountY))
+      .accounts({
+        user: liquidityProvider.publicKey,
+        torrent: torrentPDA,
+        pool: xyPool,
+        xTokenVault: xVault,
+        yTokenVault: yVault,
+        liquidityTokenMint: liquidityTokenMint,
+        userXWallet: xTokenATA,
+        userYWallet: yTokenATA,
+        userLiquidityTokenWallet: liquidityTokenATA,
+      })
+      .signers([liquidityProvider]);
+
+    let newXVaultBalance = await customGetTokenAccountBalance(provider.connection, xVault);
+    let newYVaultBalance = await customGetTokenAccountBalance(provider.connection, yVault);
+    let newliquidityBalance = await customGetTokenAccountBalance(provider.connection, liquidityTokenATA);
+    
+    let expectedNewXBalance = xVaultBalance + expectedXAdded;
+    let expectedNewYBalance = yVaultBalance + expectedYAdded;
+    
+    assert.equal(newXVaultBalance, expectedNewXBalance);
+    assert.equal(newYVaultBalance, expectedNewYBalance);
+    assert.equal(newliquidityBalance, mintAmount);
+
+    let newPoolState = await program.account.pool.fetch(xyPool);
+    let newTorrentState = await program.account.torrent.fetch(torrentPDA);
+    assert.equal(poolState.poolLiquidity.toNumber() + mintAmount, newPoolState.poolLiquidity.toNumber());
+    assert.equal(torrentState.torrentLiquidity.toNumber() + mintAmount, newTorrentState.torrentLiquidity.toNumber());
+  }
 
 });
 
