@@ -2,7 +2,7 @@ import * as anchor from '@project-serum/anchor';
 import * as spl from '@solana/spl-token';
 
 export const createTokenMint = async (connection: anchor.web3.Connection, mintAuthority: anchor.web3.Keypair, decimals: number)
-: Promise<[anchor.web3.PublicKey, anchor.web3.Keypair]>  => {
+: Promise<anchor.web3.PublicKey>  => {
 
     const airdropSignature3 = await connection.requestAirdrop(
         mintAuthority.publicKey, 2 * anchor.web3.LAMPORTS_PER_SOL);
@@ -25,7 +25,7 @@ export const createTokenMint = async (connection: anchor.web3.Connection, mintAu
     );
     console.log(`Mint account created with address: ${mintAddress.toBase58()}`);
   
-    return [mintAddress, mintAuthority];
+    return mintAddress;
 }
 
 
@@ -68,4 +68,10 @@ export const mintTokensToWallet = async(connection: anchor.web3.Connection, wall
     );
 
     console.log(`Minted ${amount} tokens to ${wallet}`);
+}
+
+export const customGetTokenAccountBalance = async(connection: anchor.web3.Connection, tokenAddress: anchor.web3.PublicKey) => {
+    let state = await connection.getTokenAccountBalance(tokenAddress);
+    let balance = state.value.uiAmount;
+    return balance;
 }
